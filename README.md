@@ -4,7 +4,7 @@ A Darktide Mod Framework mod that locally forces a mission environment: Inferno,
 
 Pick the environment with the button below Play in the mission terminal, or in the mod options. It applies to selected missions and Quickplay alike, from the next mission load.
 
-Only the visuals change, and only for you. Enemies, teammates, mutators and all gameplay effects are unchanged. If the map has no version of the chosen environment, the mission starts with its normal environment and a chat message says so.
+With Full environment on (default), the environment spawns together with the map, including Inferno fires and their sounds. Only the visuals change, and only for you. Enemies, teammates, mutators and all gameplay effects are unchanged. If the map has no version of the chosen environment, the mission starts with its normal environment and a chat message says so.
 
 ## Installation
 

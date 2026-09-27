@@ -240,7 +240,6 @@ local function hook_theme_state(ThemeState)
                 state.override_themes[i] = theme
             end
 
-            state.debug_override_hide_sets = ScriptTheme.object_sets_to_hide(state.override_themes)
             state.themes_ref = themes
             state.status = "spawning"
         end
@@ -458,84 +457,6 @@ local function fire_unit_count()
     return count
 end
 
--- TEMPORARY diagnostics (remove before release): where do the override theme's units end up in
--- the level unit index order that the server uses?
-local DEBUG_REPORT = true
-
-mod:hook_require("scripts/game_states/game/gameplay_sub_states/gameplay_init_step_states/gameplay_init_step_extension_units", function(Step)
-    mod:hook(Step, "_init_extension_unit_registration", function(func, self, world, shared_state, ...)
-        local state = load_state
-
-        if DEBUG_REPORT and state and state.status == "applied" and shared_state and shared_state.level then
-            local level = shared_state.level
-            local nested = Level.nested_levels(level)
-            local parts = {}
-
-            for i = 1, #nested do
-                local ok, name = pcall(Level.name, nested[i])
-
-                parts[#parts + 1] = tostring(ok and name or i) .. "=" .. #Level.units(nested[i], true)
-            end
-
-            state.debug_level = level
-            state.debug_units = #Level.units(level, true)
-            state.debug_direct_units = #Level.units(level)
-            state.debug_nested = table.concat(parts, ", ")
-        end
-
-        return func(self, world, shared_state, ...)
-    end)
-end)
-
-local function debug_report(state)
-    if not DEBUG_REPORT or state.status ~= "applied" then
-        return
-    end
-
-    local unit_spawner = Managers.state and Managers.state.unit_spawner
-    local min_index, max_index, fire_count, nested_fire = nil, nil, 0, 0
-
-    for unit in pairs(fire_units) do
-        if Unit.alive(unit) then
-            fire_count = fire_count + 1
-
-            local index = unit_spawner and unit_spawner:level_index(unit)
-
-            if index then
-                min_index = math.min(min_index or index, index)
-                max_index = math.max(max_index or index, index)
-            end
-
-            if Unit.level(unit) ~= state.debug_level then
-                nested_fire = nested_fire + 1
-            end
-        end
-    end
-
-    local line = string.format("LTBH debug: mode=%s units=%s direct=%s nested=[%s] fires=%d fire_idx=%s-%s fire_outside_main_level=%d excluded=%s",
-        state.full and "full" or "visual", tostring(state.debug_units), tostring(state.debug_direct_units),
-        tostring(state.debug_nested), fire_count, tostring(min_index), tostring(max_index), nested_fire,
-        tostring(state.excluded_unit_count))
-
-    local function join(list)
-        local parts = {}
-
-        for i = 1, #(list or {}) do
-            parts[i] = tostring(list[i])
-        end
-
-        return table.concat(parts, ", ")
-    end
-
-    local hide_line = string.format("LTBH debug hide sets: original=[%s] override=[%s]",
-        join(state.hide_sets), join(state.debug_override_hide_sets))
-
-    mod:info(line)
-    mod:echo(line)
-    mod:info(hide_line)
-    mod:echo(hide_line)
-end
-
 local function environment_name(environment)
     return mod:localize("environment_" .. tostring(environment))
 end
@@ -607,7 +528,6 @@ mod.update = function(dt)
 
     if load_state then
         mod:echo(load_message(load_state))
-        debug_report(load_state)
     end
 end
 
