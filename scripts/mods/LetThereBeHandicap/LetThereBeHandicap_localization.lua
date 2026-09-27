@@ -11,6 +11,12 @@ return {
     environment_tooltip = {
         en = "Environment to show on the next mission. Random picks one of the environments the map actually has. If the map lacks the chosen environment, the mission starts with its normal environment and a chat message says so. Can also be changed with the button in the mission terminal.",
     },
+    full_environment = {
+        en = "Full environment (experimental)",
+    },
+    full_environment_tooltip = {
+        en = "On: the environment is spawned together with the map, including Inferno fires and their sounds and the environment's own lights. Off: only lighting, sky, fog and light groups change. Turns itself off if the map gets out of sync with the server.",
+    },
     show_terminal_button = {
         en = "Mission terminal button",
     },
@@ -67,6 +73,15 @@ return {
     },
     message_random_missing = {
         en = "Let There Be Handicap: This map has no environment for Random. The mission starts without environment.",
+    },
+    message_fires_visual_only = {
+        en = "(visual only, no map fires)",
+    },
+    message_fires_missing = {
+        en = "No map fires could be added on this map.",
+    },
+    message_desync = {
+        en = "Let There Be Handicap: The map is out of sync with the server. Full environment has been turned off for coming missions. Leave this mission if doors, objects or lights behave oddly.",
     },
     message_already_active = {
         en = "Let There Be Handicap: %s is already this mission's environment.",
