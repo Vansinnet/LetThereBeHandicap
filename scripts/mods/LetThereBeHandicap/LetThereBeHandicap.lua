@@ -326,6 +326,64 @@ mod:hook_require("scripts/loading/host_states/host_level_state", function(HostLe
     end)
 end)
 
+-- Full mode: the override themes spawn as the last nested levels, so their units come last in
+-- Level.units. Leaving them out of the level unit registration keeps every level unit index and
+-- the next free index identical to the server's, including for levels spawned later.
+local function override_theme_units(level, state)
+    local names = {}
+
+    for i = 1, #state.override_packages do
+        local package_name = state.override_packages[i]
+
+        names[package_name] = true
+        names[package_name .. ".level"] = true
+    end
+
+    local units = {}
+    local nested_levels = Level.nested_levels(level)
+
+    for i = 1, #nested_levels do
+        local nested_level = nested_levels[i]
+
+        if names[Level.name(nested_level)] then
+            local nested_units = Level.units(nested_level, true)
+
+            for j = 1, #nested_units do
+                units[nested_units[j]] = true
+            end
+        end
+    end
+
+    return units
+end
+
+mod:hook_require("scripts/foundation/managers/unit_spawner/unit_spawner_manager", function(UnitSpawnerManager)
+    mod:hook(UnitSpawnerManager, "register_static_level_spawned_units", function(func, self, level, units)
+        local state = load_state
+
+        if not (state and state.full and state.status == "applied" and not state.units_filtered) then
+            return func(self, level, units)
+        end
+
+        state.units_filtered = true
+
+        local excluded = override_theme_units(level, state)
+        local filtered = {}
+
+        for i = 1, #units do
+            local unit = units[i]
+
+            if not excluded[unit] then
+                filtered[#filtered + 1] = unit
+            end
+        end
+
+        state.excluded_unit_count = #units - #filtered
+
+        return func(self, level, filtered)
+    end)
+end)
+
 -- Desync guard for full mode: server RPCs address level units by index. If an index resolves to a
 -- unit without the expected extension, the client level differs from the server's.
 local function full_mode_active()
@@ -453,9 +511,10 @@ local function debug_report(state)
         end
     end
 
-    local line = string.format("LTBH debug: mode=%s units=%s direct=%s nested=[%s] fires=%d fire_idx=%s-%s fire_outside_main_level=%d",
+    local line = string.format("LTBH debug: mode=%s units=%s direct=%s nested=[%s] fires=%d fire_idx=%s-%s fire_outside_main_level=%d excluded=%s",
         state.full and "full" or "visual", tostring(state.debug_units), tostring(state.debug_direct_units),
-        tostring(state.debug_nested), fire_count, tostring(min_index), tostring(max_index), nested_fire)
+        tostring(state.debug_nested), fire_count, tostring(min_index), tostring(max_index), nested_fire,
+        tostring(state.excluded_unit_count))
 
     mod:info(line)
     mod:echo(line)
