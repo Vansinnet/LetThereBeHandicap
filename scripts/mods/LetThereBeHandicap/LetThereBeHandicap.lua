@@ -540,7 +540,7 @@ local function button_visible()
 end
 
 local function mission_themes_for_level(level_name)
-    return runtime_mission_themes(level_name) or KNOWN_THEME_TAGS[level_name] or {}
+    return runtime_mission_themes(level_name) or KNOWN_THEME_TAGS[level_name]
 end
 
 local function availability_hint(view, environment)
@@ -564,6 +564,10 @@ local function availability_hint(view, environment)
     end
 
     local mission_themes = mission_themes_for_level(mission_template.level)
+
+    if not mission_themes then
+        return mod:localize("hint_unknown_map")
+    end
 
     if environment == "random" then
         local names = {}

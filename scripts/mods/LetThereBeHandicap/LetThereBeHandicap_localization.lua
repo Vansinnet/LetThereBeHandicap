@@ -50,6 +50,9 @@ return {
     hint_quickplay = {
         en = "Quickplay: checked when the mission starts",
     },
+    hint_unknown_map = {
+        en = "New map: checked when the mission starts",
+    },
     hint_available = {
         en = "Available on this map",
     },
