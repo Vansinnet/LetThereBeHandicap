@@ -53,7 +53,6 @@ local KNOWN_THEME_TAGS = {
 -- theme packages that are loaded always match the themes that are created.
 local load_state = nil
 local loader_phase = false
-local theme_phase = false
 local message_pending = false
 
 local function runtime_mission_themes(level_name)
@@ -174,98 +173,77 @@ mod:hook_require("scripts/foundation/managers/package/utilities/theme_package", 
     mod:hook(ThemePackage, "level_resource_dependency_packages", function(func, level_name, theme_tag)
         local state = load_state
 
-        if not state or state.level_name ~= level_name then
+        if not loader_phase or not state or state.level_name ~= level_name then
             return func(level_name, theme_tag)
         end
 
-        if loader_phase then
-            if not state.status then
-                resolve_override(state)
-            end
-
-            local original_packages = func(level_name, theme_tag)
-
-            if not state.theme_tag then
-                return original_packages
-            end
-
-            -- Load the original theme too: its hide sets are needed so the client spawns
-            -- the same level objects as the server.
-            local packages = {}
-            local seen = {}
-
-            append_unique(packages, seen, original_packages)
-            state.original_packages = table.clone(packages)
-            append_unique(packages, seen, func(level_name, state.theme_tag))
-            state.packages_loaded = true
-
-            return packages
+        if not state.status then
+            resolve_override(state)
         end
 
-        if theme_phase and state.packages_loaded then
-            return func(level_name, state.theme_tag)
+        local original_packages = func(level_name, theme_tag)
+
+        if not state.theme_tag then
+            return original_packages
         end
 
-        return func(level_name, theme_tag)
+        -- The original themes stay in place until the level has spawned: themes affect which
+        -- level units spawn, and the level must match the server's unit indices.
+        local packages = {}
+        local seen = {}
+
+        append_unique(packages, seen, original_packages)
+
+        state.override_packages = {}
+        append_unique(state.override_packages, {}, func(level_name, state.theme_tag))
+        append_unique(packages, seen, state.override_packages)
+
+        return packages
     end)
 end)
 
-local function capture_original_hide_sets(state, shared_state)
-    local ScriptTheme = require("scripts/foundation/utilities/script_theme")
+-- After the level has spawned, put the override themes first. Shading environments and light
+-- groups are read from the first theme that defines them.
+local function apply_override_themes(shared_state)
+    local state = load_state
+
+    if not (state and state.override_packages and state.status == "pending"
+        and shared_state and shared_state.level_name == state.level_name) then
+        return
+    end
+
     local world = shared_state.world
-    local original_packages = state.original_packages
-    local original_themes = {}
+    local themes = shared_state.themes
+    local override_packages = state.override_packages
 
-    for i = 1, #original_packages do
-        original_themes[i] = World.create_theme(world, original_packages[i])
+    for i = 1, #override_packages do
+        table.insert(themes, i, World.create_theme(world, override_packages[i]))
     end
 
-    state.hide_sets = ScriptTheme.object_sets_to_hide(original_themes)
-
-    for i = 1, #original_themes do
-        World.destroy_theme(world, original_themes[i])
-    end
-
-    state.themes_ref = shared_state.themes
     state.status = "applied"
 end
 
-local function hook_theme_state(ThemeState)
-    mod:hook(ThemeState, "init", function(func, self, state_machine, shared_state)
-        local state = load_state
+mod:hook_require("scripts/loading/local_states/local_level_state", function(LocalLevelState)
+    mod:hook(LocalLevelState, "update", function(func, self, dt)
+        local result = func(self, dt)
 
-        if not (state and state.packages_loaded and shared_state and shared_state.level_name == state.level_name) then
-            return func(self, state_machine, shared_state)
+        if result == "mission_load_done" then
+            apply_override_themes(self._shared_state)
         end
-
-        theme_phase = true
-
-        local ok, result = pcall(func, self, state_machine, shared_state)
-
-        theme_phase = false
-
-        if not ok then
-            error(result, 0)
-        end
-
-        capture_original_hide_sets(state, shared_state)
 
         return result
     end)
-end
+end)
 
-mod:hook_require("scripts/loading/local_states/local_theme_state", hook_theme_state)
-mod:hook_require("scripts/loading/host_states/host_theme_state", hook_theme_state)
+mod:hook_require("scripts/loading/host_states/host_level_state", function(HostLevelState)
+    mod:hook(HostLevelState, "update", function(func, self, dt)
+        local result = func(self, dt)
 
-mod:hook_require("scripts/foundation/utilities/script_theme", function(ScriptTheme)
-    mod:hook(ScriptTheme, "object_sets_to_hide", function(func, themes)
-        local state = load_state
-
-        if state and state.themes_ref ~= nil and state.themes_ref == themes then
-            return state.hide_sets
+        if result == "load_done" then
+            apply_override_themes(self._shared_state)
         end
 
-        return func(themes)
+        return result
     end)
 end)
 
