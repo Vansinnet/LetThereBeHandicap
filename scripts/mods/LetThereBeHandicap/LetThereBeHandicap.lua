@@ -240,6 +240,7 @@ local function hook_theme_state(ThemeState)
                 state.override_themes[i] = theme
             end
 
+            state.debug_override_hide_sets = ScriptTheme.object_sets_to_hide(state.override_themes)
             state.themes_ref = themes
             state.status = "spawning"
         end
@@ -516,8 +517,23 @@ local function debug_report(state)
         tostring(state.debug_nested), fire_count, tostring(min_index), tostring(max_index), nested_fire,
         tostring(state.excluded_unit_count))
 
+    local function join(list)
+        local parts = {}
+
+        for i = 1, #(list or {}) do
+            parts[i] = tostring(list[i])
+        end
+
+        return table.concat(parts, ", ")
+    end
+
+    local hide_line = string.format("LTBH debug hide sets: original=[%s] override=[%s]",
+        join(state.hide_sets), join(state.debug_override_hide_sets))
+
     mod:info(line)
     mod:echo(line)
+    mod:info(hide_line)
+    mod:echo(hide_line)
 end
 
 local function environment_name(environment)
