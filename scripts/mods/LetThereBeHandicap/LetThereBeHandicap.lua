@@ -53,6 +53,8 @@ local KNOWN_THEME_TAGS = {
 -- theme packages that are loaded always match the themes that are created.
 local load_state = nil
 local loader_phase = false
+local fire_units = setmetatable({}, { __mode = "k" })
+local message_delay = 0
 local message_pending = false
 
 local function runtime_mission_themes(level_name)
@@ -148,6 +150,7 @@ mod:hook_require("scripts/loading/loaders/level_loader", function(LevelLoader)
                 level_name = mission_template.level or context.level_name,
                 environment = environment,
                 original_tag = original_theme_tag(context),
+                full = mod:get("full_environment") ~= false,
             }
         end
 
@@ -202,25 +205,101 @@ mod:hook_require("scripts/foundation/managers/package/utilities/theme_package", 
     end)
 end)
 
+local function mark_desync()
+    local state = load_state
+
+    if state and not state.desync then
+        state.desync = true
+        mod:set("full_environment", false)
+        mod:echo(MISSING_COLOR .. mod:localize("message_desync") .. RESET_COLOR)
+    end
+end
+
+-- Full mode: the override themes are created right after the original ones, so they spawn with
+-- the level (fires, sounds, theme lights). Object sets are still hidden as for the original
+-- themes so the level matches the server as closely as possible.
+local function hook_theme_state(ThemeState)
+    mod:hook(ThemeState, "init", function(func, self, state_machine, shared_state)
+        local result = func(self, state_machine, shared_state)
+        local state = load_state
+
+        if state and state.full and state.override_packages and state.status == "pending"
+            and shared_state and shared_state.level_name == state.level_name then
+            local ScriptTheme = require("scripts/foundation/utilities/script_theme")
+            local world = shared_state.world
+            local themes = shared_state.themes
+            local override_packages = state.override_packages
+
+            state.hide_sets = ScriptTheme.object_sets_to_hide(table.clone(themes))
+            state.override_themes = {}
+
+            for i = 1, #override_packages do
+                local theme = World.create_theme(world, override_packages[i])
+
+                themes[#themes + 1] = theme
+                state.override_themes[i] = theme
+            end
+
+            state.themes_ref = themes
+            state.status = "spawning"
+        end
+
+        return result
+    end)
+end
+
+mod:hook_require("scripts/loading/local_states/local_theme_state", hook_theme_state)
+mod:hook_require("scripts/loading/host_states/host_theme_state", hook_theme_state)
+
+mod:hook_require("scripts/foundation/utilities/script_theme", function(ScriptTheme)
+    mod:hook(ScriptTheme, "object_sets_to_hide", function(func, themes)
+        local state = load_state
+
+        if state and state.status == "spawning" and state.themes_ref == themes then
+            return state.hide_sets
+        end
+
+        return func(themes)
+    end)
+end)
+
 -- After the level has spawned, put the override themes first. Shading environments and light
 -- groups are read from the first theme that defines them.
 local function apply_override_themes(shared_state)
     local state = load_state
 
-    if not (state and state.override_packages and state.status == "pending"
-        and shared_state and shared_state.level_name == state.level_name) then
+    if not (state and state.override_packages and shared_state and shared_state.level_name == state.level_name) then
         return
     end
 
-    local world = shared_state.world
     local themes = shared_state.themes
-    local override_packages = state.override_packages
 
-    for i = 1, #override_packages do
-        table.insert(themes, i, World.create_theme(world, override_packages[i]))
+    if state.status == "spawning" then
+        local override_themes = state.override_themes
+
+        for i = 1, #override_themes do
+            for j = #themes, 1, -1 do
+                if themes[j] == override_themes[i] then
+                    table.remove(themes, j)
+
+                    break
+                end
+            end
+
+            table.insert(themes, i, override_themes[i])
+        end
+
+        state.status = "applied"
+    elseif state.status == "pending" then
+        local world = shared_state.world
+        local override_packages = state.override_packages
+
+        for i = 1, #override_packages do
+            table.insert(themes, i, World.create_theme(world, override_packages[i]))
+        end
+
+        state.status = "applied"
     end
-
-    state.status = "applied"
 end
 
 mod:hook_require("scripts/loading/local_states/local_level_state", function(LocalLevelState)
@@ -247,6 +326,141 @@ mod:hook_require("scripts/loading/host_states/host_level_state", function(HostLe
     end)
 end)
 
+-- Desync guard for full mode: server RPCs address level units by index. If an index resolves to a
+-- unit without the expected extension, the client level differs from the server's.
+local function full_mode_active()
+    local state = load_state
+
+    return state and state.full and state.status == "applied"
+end
+
+local function level_unit_extension(system, unit_id, is_level_unit)
+    local unit_spawner = Managers.state and Managers.state.unit_spawner
+    local unit = unit_spawner and unit_spawner:unit(unit_id, is_level_unit)
+
+    return unit and system._unit_to_extension_map[unit]
+end
+
+local function guard_rpc(system_class, rpc_name, level_unit_arg_is_flagged)
+    mod:hook(system_class, rpc_name, function(func, self, channel_id, unit_id, arg3, ...)
+        if full_mode_active() then
+            local is_level_unit = true
+
+            if level_unit_arg_is_flagged then
+                is_level_unit = arg3
+            end
+
+            if is_level_unit and not level_unit_extension(self, unit_id, true) then
+                mark_desync()
+
+                return
+            end
+        end
+
+        return func(self, channel_id, unit_id, arg3, ...)
+    end)
+end
+
+mod:hook_require("scripts/extension_systems/destructible/destructible_system", function(DestructibleSystem)
+    guard_rpc(DestructibleSystem, "rpc_destructible_damage_taken", true)
+    guard_rpc(DestructibleSystem, "rpc_destructible_last_destruction", true)
+    guard_rpc(DestructibleSystem, "rpc_sync_destructible", true)
+end)
+
+mod:hook_require("scripts/extension_systems/light_controller/light_controller_system", function(LightControllerSystem)
+    guard_rpc(LightControllerSystem, "rpc_light_controller_set_enabled", false)
+    guard_rpc(LightControllerSystem, "rpc_light_controller_set_flicker_state", false)
+    guard_rpc(LightControllerSystem, "rpc_light_controller_hot_join", false)
+end)
+
+mod:hook_require("scripts/components/particle_effect", function(ParticleEffect)
+    mod:hook(ParticleEffect, "init", function(func, self, unit)
+        local particle_name = self:get_data(unit, "particle")
+
+        if type(particle_name) == "string"
+            and string.find(particle_name, "content/fx/particles/environment/", 1, true)
+            and string.find(particle_name, "fire", 1, true) then
+            fire_units[unit] = true
+        end
+
+        return func(self, unit)
+    end)
+end)
+
+local function fire_unit_count()
+    local count = 0
+
+    for unit in pairs(fire_units) do
+        if Unit.alive(unit) then
+            count = count + 1
+        end
+    end
+
+    return count
+end
+
+-- TEMPORARY diagnostics (remove before release): where do the override theme's units end up in
+-- the level unit index order that the server uses?
+local DEBUG_REPORT = true
+
+mod:hook_require("scripts/game_states/game/gameplay_sub_states/gameplay_init_step_states/gameplay_init_step_extension_units", function(Step)
+    mod:hook(Step, "_init_extension_unit_registration", function(func, self, world, shared_state, ...)
+        local state = load_state
+
+        if DEBUG_REPORT and state and state.status == "applied" and shared_state and shared_state.level then
+            local level = shared_state.level
+            local nested = Level.nested_levels(level)
+            local parts = {}
+
+            for i = 1, #nested do
+                local ok, name = pcall(Level.name, nested[i])
+
+                parts[#parts + 1] = tostring(ok and name or i) .. "=" .. #Level.units(nested[i], true)
+            end
+
+            state.debug_level = level
+            state.debug_units = #Level.units(level, true)
+            state.debug_direct_units = #Level.units(level)
+            state.debug_nested = table.concat(parts, ", ")
+        end
+
+        return func(self, world, shared_state, ...)
+    end)
+end)
+
+local function debug_report(state)
+    if not DEBUG_REPORT or state.status ~= "applied" then
+        return
+    end
+
+    local unit_spawner = Managers.state and Managers.state.unit_spawner
+    local min_index, max_index, fire_count, nested_fire = nil, nil, 0, 0
+
+    for unit in pairs(fire_units) do
+        if Unit.alive(unit) then
+            fire_count = fire_count + 1
+
+            local index = unit_spawner and unit_spawner:level_index(unit)
+
+            if index then
+                min_index = math.min(min_index or index, index)
+                max_index = math.max(max_index or index, index)
+            end
+
+            if Unit.level(unit) ~= state.debug_level then
+                nested_fire = nested_fire + 1
+            end
+        end
+    end
+
+    local line = string.format("LTBH debug: mode=%s units=%s direct=%s nested=[%s] fires=%d fire_idx=%s-%s fire_outside_main_level=%d",
+        state.full and "full" or "visual", tostring(state.debug_units), tostring(state.debug_direct_units),
+        tostring(state.debug_nested), fire_count, tostring(min_index), tostring(max_index), nested_fire)
+
+    mod:info(line)
+    mod:echo(line)
+end
+
 local function environment_name(environment)
     return mod:localize("environment_" .. tostring(environment))
 end
@@ -256,11 +470,23 @@ local function load_message(state)
     local environment = state.resolved_environment or state.environment
 
     if status == "applied" then
+        local message
+
         if state.environment == "random" then
-            return mod:localize("message_random_applied", environment_name(environment))
+            message = mod:localize("message_random_applied", environment_name(environment))
+        else
+            message = mod:localize("message_applied", environment_name(environment))
         end
 
-        return mod:localize("message_applied", environment_name(environment))
+        if environment == "inferno" then
+            if not state.full then
+                message = message .. " " .. mod:localize("message_fires_visual_only")
+            elseif fire_unit_count() == 0 then
+                message = message .. " " .. MISSING_COLOR .. mod:localize("message_fires_missing") .. RESET_COLOR
+            end
+        end
+
+        return message
     elseif status == "missing" then
         return MISSING_COLOR .. mod:localize("message_missing", environment_name(environment)) .. RESET_COLOR
     elseif status == "random_missing" then
@@ -279,13 +505,14 @@ mod.on_game_state_changed = function(status, state_name)
 
     if status == "enter" then
         message_pending = load_state ~= nil
+        message_delay = 3
     else
         message_pending = false
         load_state = nil
     end
 end
 
-mod.update = function()
+mod.update = function(dt)
     if not message_pending or not mod:is_enabled() then
         return
     end
@@ -294,10 +521,18 @@ mod.update = function()
         return
     end
 
+    -- Level components (fires) finish initializing shortly after gameplay starts.
+    message_delay = message_delay - (dt or 0)
+
+    if message_delay > 0 then
+        return
+    end
+
     message_pending = false
 
     if load_state then
         mod:echo(load_message(load_state))
+        debug_report(load_state)
     end
 end
 

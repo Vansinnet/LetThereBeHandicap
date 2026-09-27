@@ -22,6 +22,12 @@ return {
                 },
             },
             {
+                setting_id = "full_environment",
+                type = "checkbox",
+                default_value = true,
+                tooltip = "full_environment_tooltip",
+            },
+            {
                 setting_id = "show_terminal_button",
                 type = "checkbox",
                 default_value = true,
